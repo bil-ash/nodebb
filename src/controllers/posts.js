@@ -1,15 +1,19 @@
 'use strict';
 
+const nconf = require('nconf');
 const querystring = require('querystring');
 
+const meta = require('../meta');
 const posts = require('../posts');
 const privileges = require('../privileges');
+const utils = require('../utils');
+
 const helpers = require('./helpers');
 
 const postsController = module.exports;
 
 postsController.redirectToPost = async function (req, res, next) {
-	const pid = parseInt(req.params.pid, 10);
+	const pid = utils.isNumber(req.params.pid) ? parseInt(req.params.pid, 10) : req.params.pid;
 	if (!pid) {
 		return next();
 	}
@@ -23,6 +27,11 @@ postsController.redirectToPost = async function (req, res, next) {
 	}
 	if (!canRead) {
 		return helpers.notAllowed(req, res);
+	}
+
+	if (meta.config.activitypubEnabled) {
+		// Include link header for richer parsing
+		res.set('Link', `<${nconf.get('url')}/post/${req.params.pid}>; rel="alternate"; type="application/activity+json"`);
 	}
 
 	const qs = querystring.stringify(req.query);

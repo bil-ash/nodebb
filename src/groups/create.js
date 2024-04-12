@@ -18,11 +18,8 @@ module.exports = function (Groups) {
 
 		Groups.validateGroupName(data.name);
 
-		const [exists, privGroupExists] = await Promise.all([
-			meta.userOrGroupExists(data.name),
-			privilegeGroupExists(data.name),
-		]);
-		if (exists || privGroupExists) {
+		const exists = await meta.slugTaken(data.name);
+		if (exists) {
 			throw new Error('[[error:group-already-exists]]');
 		}
 
