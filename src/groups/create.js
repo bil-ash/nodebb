@@ -58,7 +58,9 @@ module.exports = function (Groups) {
 			]);
 		}
 
-		await db.setObjectField('groupslug:groupname', groupData.slug, groupData.name);
+		if (!Groups.isPrivilegeGroup(groupData.name)) {
+			await db.setObjectField('groupslug:groupname', groupData.slug, groupData.name);
+		}
 
 		groupData = await Groups.getGroupData(groupData.name);
 		plugins.hooks.fire('action:group.create', { group: groupData });
@@ -69,6 +71,10 @@ module.exports = function (Groups) {
 		return data.system === true || parseInt(data.system, 10) === 1 ||
 			Groups.systemGroups.includes(data.name) ||
 			Groups.isPrivilegeGroup(data.name);
+	}
+
+	async function privilegeGroupExists(name) {
+		return Groups.isPrivilegeGroup(name) && await db.isSortedSetMember('groups:createtime', name);
 	}
 
 	Groups.validateGroupName = function (name) {
