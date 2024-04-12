@@ -1,19 +1,203 @@
-'use strict';
+const CACHE = "ekk-cache";
+const precacheFiles = [
+  
+];
 
-self.addEventListener('fetch', function (event) {
-	// This is the code that ignores post requests
-	// https://github.com/NodeBB/NodeBB/issues/9151
-	// https://github.com/w3c/ServiceWorker/issues/1141
-	// https://stackoverflow.com/questions/54448367/ajax-xmlhttprequest-progress-monitoring-doesnt-work-with-service-workers
-	if (event.request.method === 'POST') {
-		return;
-	}
+// TODO: replace the following with the correct offline fallback page i.e.: const offlineFallbackPage = "offline.html";
+const offlineFallbackPage = "assets/503.html";
 
-	event.respondWith(caches.match(event.request).then(function (response) {
-		if (!response) {
-			return fetch(event.request);
-		}
+const networkFirstPaths = [/\/api\/v3\/chats.*/,/\/api\/chats.*/,/\/api\/user.*/]; 
+  /* Add an array of regex of paths that should go network first */
+//this is for topics & inside categories,rest like chats should be cached
+  // Example: /\/api\/.*/
 
-		return response;
-	}));
+
+const avoidCachingPaths = [/\/assets\/uploads\/.*/,/\/socket.io\/.*/,/\/api\/.*/];
+  /* Add an array of regex of paths that shouldn't be cached */
+  // Example: /\/api\/.
+
+
+function pathComparer(requestUrl, pathRegEx) {
+  return requestUrl.match(new RegExp(pathRegEx));
+}
+
+function comparePaths(requestUrl, pathsArray) {
+  if (requestUrl) {
+    for (let index = 0; index < pathsArray.length; index++) {
+      const pathRegEx = pathsArray[index];
+      if (pathComparer(requestUrl, pathRegEx)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+self.addEventListener("install", function (event) {
+  console.log("Install Event processing");
+
+  console.log("Skip waiting on install");
+  self.skipWaiting();
+
+  event.waitUntil(
+    caches.open(CACHE).then(function (cache) {
+      console.log(" Caching pages during install");
+
+      return cache.addAll(precacheFiles).then(function () {
+        if (offlineFallbackPage === "ToDo-replace-this-name.html") {
+          return cache.add(new Response("Service worker not set up properly"));
+        }
+
+        return cache.add(offlineFallbackPage);
+      });
+    })
+  );
 });
+/*
+// Allow sw to control of current page
+self.addEventListener("activate", function (event) {
+  console.log("Claiming clients for current page");
+  event.waitUntil(self.clients.claim());
+});
+
+// If any fetch fails, it will look for the request in the cache and serve it from there first
+self.addEventListener("fetch", function (event) {
+
+if (event.request.url.endsWith('/receive/') && event.request.method === 'POST') {
+    return event.respondWith(
+      (async () => {
+        const formData = await event.request.formData();
+        const image = formData.get('image');
+	const title=formData.get('title')||'Everyone see '+new Date().toISOString();
+	const text=formData.get('text')||' ';
+	const url=formData.get('url');
+        /*const keys = await caches.keys();
+        const mediaCache = await caches.open(keys.filter((key) => key.startsWith('media'))[0]);
+        await mediaCache.put('shared-image', new Response(image));
+replacing with idbKeyval, but should be a separate commit
+ */
+        return Response.redirect('./?share-target', 303);
+      })(),
+    );
+  }
+
+if (event.request.method !== "GET") return;	
+
+  if (comparePaths(event.request.url, networkFirstPaths)) {
+    networkFirstFetch(event);
+  } else {
+    cacheFirstFetch(event);
+  }
+});
+*/
+function cacheFirstFetch(event) {
+  event.respondWith(
+    fromCache(event.request).then(
+      function (response) {
+        // The response was found in the cache so we responde with it and update the entry
+
+        // This is where we call the server to get the newest version of the
+        // file to use the next time we show view
+        event.waitUntil(
+          fetch(event.request).then(function (response) {
+            return updateCache(event.request, response);
+          })
+        );
+
+        return response;
+      },
+      function () {
+        // The response was not found in the cache so we look for it on the server
+        return fetch(event.request)
+          .then(function (response) {
+            // If request was success, add or update it in the cache
+            event.waitUntil(updateCache(event.request, response.clone()));
+
+            return response;
+          })
+          .catch(function (error) {
+            // The following validates that the request was for a navigation to a new document
+            if (event.request.destination !== "document" || event.request.mode !== "navigate") {
+              return;
+            }
+
+            console.log("[ ] Network request failed and no cache." + error);
+            // Use the precached offline page as fallback
+            return caches.open(CACHE).then(function (cache) {
+              cache.match(offlineFallbackPage);
+            });
+          });
+      }
+    )
+  );
+}
+
+function networkFirstFetch(event) {
+  event.respondWith(
+    fetch(event.request)
+      .then(function (response) {
+        // If request was success, add or update it in the cache
+        event.waitUntil(updateNCache(event.request, response.clone()));
+        return response;
+      })
+      .catch(function (error) {
+        console.log(" Network request Failed. Serving content from cache: " + error);
+        return fromCache(event.request);
+      })
+  );
+}
+
+function fromCache(request) {
+  if (request.url.startsWith('/assets/uploads/')){
+	get(request.url.substring(request.url.lastIndexOf('/')+1))
+		.then((got)=>{
+			const resp=new Response(got);
+			console.log(resp);
+			return resp;
+		})
+}
+	
+	// Check to see if you have it in the cache
+  // Return response
+  // If not in the cache, then return error page
+  return caches.open(CACHE).then(function (cache) {
+    return cache.match(request).then(function (matching) {
+      if (!matching || matching.status === 404) {
+        return Promise.reject("no-match");
+      }
+
+      return matching;
+    });
+  });
+}
+
+function updateCache(request, response) {
+if (request.url.startsWith('/assets/uploads/')){
+	console.log(response);
+	set(request.url.substring(request.url.lastIndexOf('/')+1),response)
+		.then(()=>{Promise.resolve();})
+		.catch((err)=>{console.log('idb set err',err);});
+}
+	
+  if (!comparePaths(request.url, avoidCachingPaths)) {
+		//TODO:if avoidCachingPath-i)socket.io>formatted error json msg so that pg is not white   ii)uploads> save to indexed db and ret resp
+    return caches.open(CACHE).then(function (cache) {
+      return cache.put(request, response);
+    });
+  }
+
+  return Promise.resolve();
+}
+
+function updateNCache(request, response) {
+  if (request.url!==null) {
+		//TODO:if avoidCachingPath-i)socket.io>formatted error json msg so that pg is not white   ii)uploads> save to indexed db and ret resp
+    return caches.open(CACHE).then(function (cache) {
+      return cache.put(request, response);
+    });
+  }
+
+  return Promise.resolve();
+}
+
