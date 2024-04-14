@@ -144,6 +144,7 @@ activitypubApi.update.profile = enabledCheck(async (caller, { uid }) => {
 	]);
 
 	await activitypub.send('uid', caller.uid, followers, {
+		id: `${object.id}#activity/update/${Date.now()}`,
 		type: 'Update',
 		to: [activitypub._constants.publicAddress],
 		cc: [],
@@ -212,4 +213,47 @@ activitypubApi.undo.like = enabledCheck(async (caller, { pid }) => {
 			object: pid,
 		},
 	});
+});
+
+activitypubApi.flag = enabledCheck(async (caller, flag) => {
+	if (!activitypub.helpers.isUri(flag.targetId)) {
+		return;
+	}
+	const reportedIds = [flag.targetId];
+	if (flag.type === 'post' && activitypub.helpers.isUri(flag.targetUid)) {
+		reportedIds.push(flag.targetUid);
+	}
+	const reason = flag.reason ||
+		(flag.reports && flag.reports.filter(report => report.reporter.uid === caller.uid).at(-1).value);
+	await activitypub.send('uid', caller.uid, reportedIds, {
+		id: `${nconf.get('url')}/${flag.type}/${encodeURIComponent(flag.targetId)}#activity/flag/${caller.uid}`,
+		type: 'Flag',
+		object: reportedIds,
+		content: reason,
+	});
+	await db.sortedSetAdd(`flag:${flag.flagId}:remote`, Date.now(), caller.uid);
+});
+
+activitypubApi.undo.flag = enabledCheck(async (caller, flag) => {
+	if (!activitypub.helpers.isUri(flag.targetId)) {
+		return;
+	}
+	const reportedIds = [flag.targetId];
+	if (flag.type === 'post' && activitypub.helpers.isUri(flag.targetUid)) {
+		reportedIds.push(flag.targetUid);
+	}
+	const reason = flag.reason ||
+		(flag.reports && flag.reports.filter(report => report.reporter.uid === caller.uid).at(-1).value);
+	await activitypub.send('uid', caller.uid, reportedIds, {
+		id: `${nconf.get('url')}/${flag.type}/${encodeURIComponent(flag.targetId)}#activity/undo:flag/${caller.uid}`,
+		type: 'Undo',
+		object: {
+			id: `${nconf.get('url')}/${flag.type}/${encodeURIComponent(flag.targetId)}#activity/flag/${caller.uid}`,
+			actor: `${nconf.get('url')}/uid/${caller.uid}`,
+			type: 'Flag',
+			object: reportedIds,
+			content: reason,
+		},
+	});
+	await db.sortedSetRemove(`flag:${flag.flagId}:remote`, caller.uid);
 });

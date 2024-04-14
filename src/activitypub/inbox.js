@@ -358,6 +358,21 @@ inbox.undo = async (req) => {
 			}
 
 			notifications.rescind(`announce:post:${id}:uid:${actor}`);
+			break;
+		}
+		case 'Flag': {
+			if (!Array.isArray(object.object)) {
+				object.object = [object.object];
+			}
+			await Promise.all(object.object.map(async (subject) => {
+				const { type, id } = await activitypub.helpers.resolveLocalId(subject.id);
+				try {
+					await flags.rescindReport(type, id, actor);
+				} catch (e) {
+					reject('Undo', { type: 'Flag', object: [subject] }, actor);
+				}
+			}));
+			break;
 		}
 	}
 };
@@ -371,9 +386,9 @@ inbox.flag = async (req) => {
 	}
 
 	await Promise.all(objects.map(async (subject, index) => {
-		const { type, id } = await activitypub.helpers.resolveLocalId(subject.id);
+		const { type, id } = await activitypub.helpers.resolveObjects(subject.id);
 		try {
-			await flags.create(type, id, actor, content);
+			await flags.create(activitypub.helpers.mapToLocalType(type), id, actor, content);
 		} catch (e) {
 			reject('Flag', objects[index], actor);
 		}
