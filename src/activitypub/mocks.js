@@ -78,8 +78,7 @@ Mocks.post = async (objects) => {
 	}
 
 	const posts = await Promise.all(objects.map(async (object) => {
-		const acceptedTypes = ['Note', 'Page', 'Article', 'Question'];
-		if (!acceptedTypes.includes(object.type)) {
+		if (!activitypub._constants.acceptedPostTypes.includes(object.type)) {
 			return null;
 		}
 
@@ -158,7 +157,7 @@ Mocks.actors.user = async (uid) => {
 
 		type: 'Person',
 		name: username !== displayname ? fullname : username, // displayname is escaped, fullname is not
-		preferredUsername: username,
+		preferredUsername: userslug,
 		summary: aboutme,
 		icon: picture,
 		image: cover,
@@ -237,6 +236,9 @@ Mocks.note = async (post) => {
 		}));
 	}
 
+	post.content = posts.relativeToAbsolute(post.content, posts.urlRegex);
+	post.content = posts.relativeToAbsolute(post.content, posts.imgRegex);
+
 	let source = null;
 	const [markdownEnabled, mentionsEnabled] = await Promise.all([
 		plugins.isActive('nodebb-plugin-markdown'),
@@ -282,11 +284,37 @@ Mocks.note = async (post) => {
 	}
 
 	let attachment = await posts.attachments.get(post.pid) || [];
-	attachment = attachment.map(({ mediaType, url }) => ({
-		type: 'Document',
-		mediaType,
-		url,
-	}));
+	const uploads = await posts.uploads.listWithSizes(post.pid);
+	uploads.forEach(({ name, width, height }) => {
+		const mediaType = mime.getType(name);
+		const url = `${nconf.get('url') + nconf.get('upload_url')}/${name}`;
+		attachment.push({ mediaType, url, width, height });
+	});
+
+	attachment = attachment.map(({ mediaType, url, width, height }) => {
+		let type;
+
+		switch (true) {
+			case mediaType.startsWith('image'): {
+				type = 'Image';
+				break;
+			}
+
+			default: {
+				type = 'Link';
+				break;
+			}
+		}
+
+		const payload = { type, mediaType, url };
+
+		if (width || height) {
+			payload.width = width;
+			payload.height = height;
+		}
+
+		return payload;
+	});
 
 	const object = {
 		'@context': 'https://www.w3.org/ns/activitystreams',
