@@ -18,4 +18,14 @@ module.exports = function (app, middleware, controllers) {
 			.set('Service-Worker-Allowed', `${nconf.get('relative_path')}/`)
 			.sendFile(path.join(__dirname, '../../build/public/src/service-worker.js'));
 	});
+	app.get('/appcache-polyfill-window.js', (req, res) => {
+		res.status(200)
+			.type('application/javascript')
+			.sendFile(path.join(__dirname, '../../build/public/src/appcache-polyfill-window.js'));
+	});
+	app.get('/appcache-polyfill-sw.js', (req, res) => {
+		res.status(200)
+			.type('application/javascript')
+			.sendFile(path.join(__dirname, '../../build/public/src/appcache-polyfill-sw.js'));
+	});
 };

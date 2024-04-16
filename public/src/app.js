@@ -354,10 +354,23 @@ if (document.readyState === 'loading') {
 	};
 
 	function registerServiceWorker() {
+
+	// Optional: define a callback that runs whenever caches are updated.
+  	// This is *rough* replacement for listening for AppCache updates.
+  	function myCachePopulatedCallback(urls) {
+    // urls is an array of updated URLs
+    // Your logic goes here.
+  	}
+
+
 		// Do not register for Safari browsers
 		if (!config.useragent.isSafari && 'serviceWorker' in navigator) {
+
+			init({
+				cachePopulatedCallback: myCachePopulatedCallback,
+			  }).then(()=>{
 			navigator.serviceWorker.register(config.relative_path + '/service-worker.js', { scope: config.relative_path + '/' })
-				.then(function () {
+			}).then(function () {
 					console.info('ServiceWorker registration succeeded.');
 				}).catch(function (err) {
 					console.info('ServiceWorker registration failed: ', err);
