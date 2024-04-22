@@ -40,6 +40,19 @@ inbox.create = async (req) => {
 	const response = await activitypub.notes.assert(0, object);
 	if (response) {
 		winston.verbose(`[activitypub/inbox] Parsing ${response.count} notes into topic ${response.tid}`);
+
+		// todo: put this somewhere better if need be... maybe this is better as api.activitypub.announce.note?
+		const cid = await topics.getTopicField(response.tid, 'cid');
+		const followers = await activitypub.notes.getCategoryFollowers(cid);
+		if (followers.length) {
+			await activitypub.send('cid', cid, followers, {
+				id: `${object.id}#activity/announce`,
+				type: 'Announce',
+				to: [`${nconf.get('url')}/category/${cid}/followers`],
+				cc: [activitypub._constants.publicAddress],
+				object,
+			});
+		}
 	}
 };
 
@@ -109,6 +122,12 @@ inbox.announce = async (req) => {
 	let tid;
 	let pid;
 
+	const { cids } = await activitypub.actors.getLocalFollowers(actor);
+	let cid = null;
+	if (cids.size > 0) {
+		cid = Array.from(cids)[0];
+	}
+
 	if (String(object.id).startsWith(nconf.get('url'))) {
 		// Local object
 		const { type, id } = await activitypub.helpers.resolveLocalId(object.id);
@@ -122,20 +141,26 @@ inbox.announce = async (req) => {
 		socketHelpers.sendNotificationToPostOwner(pid, actor, 'announce', 'notifications:activitypub.announce');
 	} else {
 		// Remote object
-		const isFollowed = await db.sortedSetCard(`followersRemote:${actor}`);
-		if (!isFollowed) {
+		const numFollowers = await activitypub.actors.getLocalFollowersCount(actor);
+		if (!numFollowers) {
 			winston.info(`[activitypub/inbox.announce] Rejecting ${object.id} via ${actor} due to no followers`);
 			reject('Announce', object, actor);
 			return;
 		}
 
-		pid = object.id;
+		// Handle case where Announce(Create(Note)) is received
+		if (object.type === 'Create' && object.object.type === 'Note') {
+			pid = object.object.id;
+		} else {
+			pid = object.id;
+		}
+
 		pid = await activitypub.resolveId(0, pid); // in case wrong id is passed-in; unlikely, but still.
 		if (!pid) {
 			return;
 		}
 
-		({ tid } = await activitypub.notes.assert(0, pid, { skipChecks: true })); // checks skipped; done above.
+		({ tid } = await activitypub.notes.assert(0, pid, { cid, skipChecks: true })); // checks skipped; done above.
 		if (!tid) {
 			return;
 		}
@@ -147,23 +172,25 @@ inbox.announce = async (req) => {
 
 	winston.info(`[activitypub/inbox/announce] Parsing id ${pid}`);
 
-	// No double-announce allowed
-	const existing = await topics.events.find(tid, {
-		type: 'announce',
-		uid: actor,
-		pid,
-	});
-	if (existing.length) {
-		await topics.events.purge(tid, existing);
-	}
+	if (!cid) { // Topic events from actors followed by users only
+		// No double-announce allowed
+		const existing = await topics.events.find(tid, {
+			type: 'announce',
+			uid: actor,
+			pid,
+		});
+		if (existing.length) {
+			await topics.events.purge(tid, existing);
+		}
 
-	await topics.events.log(tid, {
-		type: 'announce',
-		uid: actor,
-		href: `/post/${encodeURIComponent(pid)}`,
-		pid,
-		timestamp,
-	});
+		await topics.events.log(tid, {
+			type: 'announce',
+			uid: actor,
+			href: `/post/${encodeURIComponent(pid)}`,
+			pid,
+			timestamp,
+		});
+	}
 };
 
 inbox.follow = async (req) => {
@@ -178,6 +205,7 @@ inbox.follow = async (req) => {
 	if (!assertion) {
 		throw new Error('[[error:activitypub.invalid-id]]');
 	}
+	const handle = await user.getUserField(actor, 'username');
 
 	if (type === 'user') {
 		const exists = await user.exists(id);
@@ -199,6 +227,7 @@ inbox.follow = async (req) => {
 
 		user.onFollow(actor, id);
 		activitypub.send('uid', id, actor, {
+			id: `${nconf.get('url')}/${type}/${id}#activity/accept:follow/${handle}`,
 			type: 'Accept',
 			object: {
 				id: followId,
@@ -225,6 +254,7 @@ inbox.follow = async (req) => {
 		}
 
 		activitypub.send('cid', id, actor, {
+			id: `${nconf.get('url')}/${type}/${id}#activity/accept:follow/${handle}`,
 			type: 'Accept',
 			object: {
 				id: followId,
@@ -247,9 +277,9 @@ inbox.accept = async (req) => {
 	const { actor, object } = req.body;
 	const { type } = object;
 
-	const { type: localType, id: uid } = await helpers.resolveLocalId(object.actor);
-	if (localType !== 'user' || !uid) {
-		throw new Error('[[error:invalid-uid]]');
+	const { type: localType, id } = await helpers.resolveLocalId(object.actor);
+	if (!['user', 'category'].includes(localType)) {
+		throw new Error('[[error:invalid-data]]');
 	}
 
 	const assertion = await activitypub.actors.assert(actor);
@@ -258,18 +288,31 @@ inbox.accept = async (req) => {
 	}
 
 	if (type === 'Follow') {
-		if (!await db.isSortedSetMember(`followRequests:${uid}`, actor)) {
-			if (await db.isSortedSetMember(`followingRemote:${uid}`, actor)) return; // already following
-			return reject('Accept', req.body, actor); // not following, not requested, so reject to hopefully stop retries
+		if (localType === 'user') {
+			if (!await db.isSortedSetMember(`followRequests:uid.${id}`, actor)) {
+				if (await db.isSortedSetMember(`followingRemote:${id}`, actor)) return; // already following
+				return reject('Accept', req.body, actor); // not following, not requested, so reject to hopefully stop retries
+			}
+			const now = Date.now();
+			await Promise.all([
+				db.sortedSetRemove(`followRequests:uid.${id}`, actor),
+				db.sortedSetAdd(`followingRemote:${id}`, now, actor),
+				db.sortedSetAdd(`followersRemote:${actor}`, now, id), // for followers backreference and notes assertion checking
+			]);
+			const followingRemoteCount = await db.sortedSetCard(`followingRemote:${id}`);
+			await user.setUserField(id, 'followingRemoteCount', followingRemoteCount);
+		} else if (localType === 'category') {
+			if (!await db.isSortedSetMember(`followRequests:cid.${id}`, actor)) {
+				if (await db.isSortedSetMember(`cid:${id}:following`, actor)) return; // already following
+				return reject('Accept', req.body, actor); // not following, not requested, so reject to hopefully stop retries
+			}
+			const now = Date.now();
+			await Promise.all([
+				db.sortedSetRemove(`followRequests:cid.${id}`, actor),
+				db.sortedSetAdd(`cid:${id}:following`, now, actor),
+				db.sortedSetAdd(`followersRemote:${actor}`, now, `cid|${id}`), // for notes assertion checking
+			]);
 		}
-		const now = Date.now();
-		await Promise.all([
-			db.sortedSetRemove(`followRequests:${uid}`, actor),
-			db.sortedSetAdd(`followingRemote:${uid}`, now, actor),
-			db.sortedSetAdd(`followersRemote:${actor}`, now, uid), // for followers backreference and notes assertion checking
-		]);
-		const followingRemoteCount = await db.sortedSetCard(`followingRemote:${uid}`);
-		await user.setUserField(uid, 'followingRemoteCount', followingRemoteCount);
 	}
 };
 
