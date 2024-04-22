@@ -7,6 +7,7 @@ require('bootstrap');
 window.bootbox = require('bootbox');
 require('jquery-form');
 window.utils = require('./utils');
+window.init=require('./appcache-polyfill-window.js').init;
 require('timeago');
 
 const Benchpress = require('benchpressjs');
