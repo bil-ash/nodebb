@@ -86,9 +86,10 @@ module.exports = function (User) {
 		const tids = postData.map(post => post.tid);
 
 		const topicData = await topics.getTopicsFields(tids, ['title']);
+
 		postFlags.forEach((flagObj, idx) => {
 			flagObj.pid = flagObj.targetId;
-			if (!tids[idx]) {
+      if (!tids[idx]) {
 				flagObj.targetPurged = true;
 			}
 			return _.extend(flagObj, topicData[idx]);
