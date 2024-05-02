@@ -71,15 +71,12 @@ Notes.assert = async (uid, input, options = { skipChecks: false }) => {
 	} else {
 		// mainPid ok to leave as-is
 		cid = options.cid || -1;
-		title = name || utils.decodeHTMLEntities(utils.stripHTMLTags(content));
-		if (title.length > meta.config.maximumTitleLength) {
-			title = `${title.slice(0, meta.config.maximumTitleLength - 3)}...`;
-		}
+		title = name || activitypub.helpers.generateTitle(utils.decodeHTMLEntities(content));
 	}
 	mainPid = utils.isNumber(mainPid) ? parseInt(mainPid, 10) : mainPid;
 
 	// Relation & privilege check for local categories
-	const hasRelation = options.skipChecks || hasTid || await assertRelation(chain[0]);
+	const hasRelation = options.skipChecks || options.cid || hasTid || await assertRelation(chain[0]);
 	const privilege = `topics:${tid ? 'reply' : 'create'}`;
 	const allowed = await privileges.categories.can(privilege, cid, activitypub._constants.uid);
 	if (!hasRelation || !allowed) {
@@ -306,4 +303,50 @@ Notes.getCategoryFollowers = async (cid) => {
 	uids = uids.filter(uid => !utils.isNumber(uid));
 
 	return uids;
+};
+
+Notes.announce = {};
+
+Notes.announce.list = async ({ pid, tid }) => {
+	let pids = [];
+	if (pid) {
+		pids = [pid];
+	} else if (tid) {
+		let mainPid;
+		([pids, mainPid] = await Promise.all([
+			db.getSortedSetMembers(`tid:${tid}:posts`),
+			topics.getTopicField(tid, 'mainPid'),
+		]));
+		pids.unshift(mainPid);
+	}
+
+	if (!pids.length) {
+		return [];
+	}
+
+	const keys = pids.map(pid => `pid:${pid}:announces`);
+	let announces = await db.getSortedSetsMembersWithScores(keys);
+	announces = announces.reduce((memo, cur, idx) => {
+		if (cur.length) {
+			const pid = pids[idx];
+			cur.forEach(({ value: actor, score: timestamp }) => {
+				memo.push({ pid, actor, timestamp });
+			});
+		}
+		return memo;
+	}, []);
+
+	return announces;
+};
+
+Notes.announce.add = async (pid, actor, timestamp = Date.now()) => {
+	await db.sortedSetAdd(`pid:${pid}:announces`, timestamp, actor);
+};
+
+Notes.announce.remove = async (pid, actor) => {
+	await db.sortedSetRemove(`pid:${pid}:announces`, actor);
+};
+
+Notes.announce.removeAll = async (pid) => {
+	await db.delete(`pid:${pid}:announces`);
 };
