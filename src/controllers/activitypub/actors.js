@@ -62,22 +62,65 @@ Actors.note = async function (req, res) {
 	res.status(200).json(payload);
 };
 
-Actors.topic = async function (req, res) {
-	// When queried, a topic more or less returns the main pid's note representation
+Actors.topic = async function (req, res, next) {
 	const allowed = await privileges.topics.can('topics:read', req.params.tid, activitypub._constants.uid);
-	const { mainPid, slug } = await topics.getTopicFields(req.params.tid, ['mainPid', 'slug']);
-	const post = (await posts.getPostSummaryByPids([mainPid], req.uid, { stripTags: false })).pop();
-	if (!allowed || !post) {
+	if (!allowed) {
 		return res.sendStatus(404);
 	}
 
-	const payload = await activitypub.mocks.note(post);
-	payload.id = `${nconf.get('url')}/topic/${req.params.tid}`;
-	payload.type = 'Page';
-	payload.url = `${nconf.get('url')}/topic/${slug}`;
-	payload.audience = `${nconf.get('url')}/category/${post.category.slug}`;
+	let page = parseInt(req.query.page, 10);
+	const { cid, titleRaw: name, mainPid, slug, postcount } = await topics.getTopicFields(req.params.tid, ['cid', 'title', 'mainPid', 'slug', 'postcount']);
+	const pageCount = Math.max(1, Math.ceil(postcount / meta.config.postsPerPage));
+	let items;
+	let paginate = true;
 
-	res.status(200).json(payload);
+	if (!page && pageCount === 1) {
+		page = 1;
+		paginate = false;
+	}
+
+	if (page) {
+		const invalidPagination = page < 1 || page > pageCount;
+		if (invalidPagination) {
+			return next();
+		}
+
+		const start = Math.max(0, ((page - 1) * meta.config.postsPerPage) - 1);
+		const stop = Math.max(0, start + meta.config.postsPerPage - 1);
+		const pids = await posts.getPidsFromSet(`tid:${req.params.tid}:posts`, start, stop);
+		if (page === 1) {
+			pids.unshift(mainPid);
+			pids.length = Math.min(pids.length, meta.config.postsPerPage);
+		}
+		items = pids.map(pid => (utils.isNumber(pid) ? `${nconf.get('url')}/post/${pid}` : pid));
+	}
+
+	const object = {
+		'@context': 'https://www.w3.org/ns/activitystreams',
+		id: `${nconf.get('url')}/topic/${req.params.tid}${paginate && page ? `?page=${page}` : ''}`,
+		url: `${nconf.get('url')}/topic/${slug}`,
+		name,
+		type: paginate && items ? 'OrderedCollectionPage' : 'OrderedCollection',
+		audience: `${nconf.get('url')}/category/${cid}`,
+		totalItems: postcount,
+	};
+
+	if (items) {
+		object.items = items;
+
+		if (paginate) {
+			object.partOf = `${nconf.get('url')}/topic/${req.params.tid}`;
+			object.next = page < pageCount ? `${nconf.get('url')}/topic/${req.params.tid}?page=${page + 1}` : null;
+			object.prev = page > 1 ? `${nconf.get('url')}/topic/${req.params.tid}?page=${page - 1}` : null;
+		}
+	}
+
+	if (paginate) {
+		object.first = `${nconf.get('url')}/topic/${req.params.tid}?page=1`;
+		object.last = `${nconf.get('url')}/topic/${req.params.tid}?page=${pageCount}`;
+	}
+
+	res.status(200).json(object);
 };
 
 Actors.category = async function (req, res, next) {
