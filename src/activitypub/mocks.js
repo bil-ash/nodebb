@@ -26,7 +26,7 @@ Mocks.profile = async (actors) => {
 		const uid = actor.id;
 		let {
 			url, preferredUsername, published, icon, image,
-			name, summary, followerCount, followingCount,
+			name, summary, followers, followerCount, followingCount,
 			postcount, inbox, endpoints,
 		} = actor;
 		preferredUsername = preferredUsername || slugify(name);
@@ -62,6 +62,7 @@ Mocks.profile = async (actors) => {
 			url,
 			inbox,
 			sharedInbox: endpoints ? endpoints.sharedInbox : null,
+			followersUrl: followers,
 		};
 
 		return payload;
@@ -211,6 +212,18 @@ Mocks.actors.category = async (cid) => {
 
 Mocks.note = async (post) => {
 	const id = `${nconf.get('url')}/post/${post.pid}`;
+
+	// Return a tombstone for a deleted post
+	if (post.deleted === true) {
+		return Mocks.tombstone({
+			id,
+			formerType: 'Note',
+			attributedTo: `${nconf.get('url')}/uid/${post.user.uid}`,
+			context: `${nconf.get('url')}/topic/${post.topic.tid}`,
+			audience: `${nconf.get('url')}/category/${post.category.cid}`,
+		});
+	}
+
 	const published = new Date(parseInt(post.timestamp, 10)).toISOString();
 
 	// todo: post visibility
@@ -340,3 +353,9 @@ Mocks.note = async (post) => {
 
 	return object;
 };
+
+Mocks.tombstone = async properties => ({
+	'@context': 'https://www.w3.org/ns/activitystreams',
+	type: 'Tombstone',
+	...properties,
+});
