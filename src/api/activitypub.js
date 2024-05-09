@@ -17,6 +17,7 @@ const meta = require('../meta');
 const privileges = require('../privileges');
 const activitypub = require('../activitypub');
 const posts = require('../posts');
+const utils = require('../utils');
 
 const activitypubApi = module.exports;
 
@@ -94,12 +95,11 @@ activitypubApi.unfollow = enabledCheck(async (caller, { type, id, actor }) => {
 activitypubApi.create = {};
 
 // this might be better genericised... tbd. some of to/cc is built in mocks.
-async function buildRecipients(object, uid) {
+async function buildRecipients(object, { pid, uid }) {
 	const followers = await db.getSortedSetMembers(`followersRemote:${uid}`);
 	let { to, cc } = object;
 	to = new Set(to);
 	cc = new Set(cc);
-
 
 	// Directly address user if inReplyTo
 	const parentId = await posts.getPostField(object.inReplyTo, 'uid');
@@ -110,6 +110,16 @@ async function buildRecipients(object, uid) {
 	const targets = new Set([...followers, ...to, ...cc]);
 	targets.delete(`${nconf.get('url')}/uid/${uid}/followers`); // followers URL not targeted
 	targets.delete(activitypub._constants.publicAddress); // public address not targeted
+
+	// Announcers and their followers
+	if (pid) {
+		const announcers = (await activitypub.notes.announce.list({ pid })).map(({ actor }) => actor);
+		const announcersFollowers = (await user.getUsersFields(announcers, ['followersUrl']))
+			.filter(o => o.hasOwnProperty('followersUrl'))
+			.map(({ followersUrl }) => followersUrl);
+		[...announcers].forEach(uri => targets.add(uri));
+		[...announcers, ...announcersFollowers].forEach(uri => cc.add(uri));
+	}
 
 	object.to = Array.from(to);
 	object.cc = Array.from(cc);
@@ -129,7 +139,7 @@ activitypubApi.create.post = enabledCheck(async (caller, { pid }) => {
 	}
 
 	const object = await activitypub.mocks.note(post);
-	const { targets } = await buildRecipients(object, post.user.uid);
+	const { targets } = await buildRecipients(object, { uid: post.user.uid });
 	const { cid } = post.category;
 	const followers = await activitypub.notes.getCategoryFollowers(cid);
 
@@ -174,8 +184,13 @@ activitypubApi.update.profile = enabledCheck(async (caller, { uid }) => {
 });
 
 activitypubApi.update.note = enabledCheck(async (caller, { post }) => {
+	// Only applies to local posts
+	if (!utils.isNumber(post.pid)) {
+		return;
+	}
+
 	const object = await activitypub.mocks.note(post);
-	const { targets } = await buildRecipients(object, post.user.uid);
+	const { targets } = await buildRecipients(object, { pid: post.pid, uid: post.user.uid });
 
 	const allowed = await privileges.posts.can('topics:read', post.pid, activitypub._constants.uid);
 	if (!allowed) {
@@ -184,7 +199,7 @@ activitypubApi.update.note = enabledCheck(async (caller, { post }) => {
 	}
 
 	const payload = {
-		id: `${object.id}#activity/update/${post.edited}`,
+		id: `${object.id}#activity/update/${post.edited || Date.now()}`,
 		type: 'Update',
 		to: object.to,
 		cc: object.cc,
