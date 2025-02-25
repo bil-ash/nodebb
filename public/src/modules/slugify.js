@@ -26,13 +26,13 @@
 		}
 		str = String(str).replace(trimRegex, '');
 		if (isLatin.test(str)) {
-			str = str.replace(invalidLatinChars, '-');
+			str = str.replace(invalidLatinChars, '_');
 		} else {
-			str = XRegExp.replace(str, invalidUnicodeChars, '-');
+			str = XRegExp.replace(str, invalidUnicodeChars, '_');
 		}
 		str = !preserveCase ? str.toLocaleLowerCase() : str;
-		str = str.replace(collapseWhitespace, '-');
-		str = str.replace(collapseDash, '-');
+		str = str.replace(collapseWhitespace, '_');
+		str = str.replace(collapseDash, '_');
 		str = str.replace(trimTrailingDash, '');
 		str = str.replace(trimLeadingDash, '');
 		return str;
