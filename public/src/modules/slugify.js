@@ -35,8 +35,6 @@
 		str = str.replace(collapseDash, '_');
 		str = str.replace(trimTrailingDash, '');
 		str = str.replace(trimLeadingDash, '');
-		console.log('slug is '+str);
-		console.warn('slug is '+str);
 		return str;
 	};
 }));
