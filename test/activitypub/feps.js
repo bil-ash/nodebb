@@ -22,8 +22,8 @@ describe('FEPs', () => {
 		await install.giveWorldPrivileges();
 	});
 
-	describe.only('1b12', () => {
-		describe('announceObject()', () => {
+	describe('1b12', () => {
+		describe('announce()', () => {
 			let cid;
 			let uid;
 			let adminUid;
@@ -49,7 +49,7 @@ describe('FEPs', () => {
 			});
 
 			it('should be called when a topic is moved from uncategorized to another category', async () => {
-				const { topicData } = await topics.post({
+				const { topicData, postData } = await topics.post({
 					uid,
 					cid: -1,
 					title: utils.generateUUID(),
@@ -63,7 +63,13 @@ describe('FEPs', () => {
 					cid,
 				});
 
-				assert.strictEqual(activitypub._sent.size, 1);
+				assert.strictEqual(activitypub._sent.size, 2);
+
+				const key = Array.from(activitypub._sent.keys())[0];
+				const activity = activitypub._sent.get(key);
+
+				assert(activity && activity.object && typeof activity.object === 'object');
+				assert.strictEqual(activity.object.id, `${nconf.get('url')}/post/${postData.pid}`);
 			});
 
 			it('should be called for a newly forked topic', async () => {
@@ -74,21 +80,52 @@ describe('FEPs', () => {
 					content: utils.generateUUID(),
 				});
 				const { tid } = topicData;
-				const [{ pid: reply1Pid }, { pid: reply2Pid }] = await Promise.all([
-					topics.reply({ uid, tid, content: utils.generateUUID() }),
-					topics.reply({ uid, tid, content: utils.generateUUID() }),
-				]);
-				const forked = await topics.createTopicFromPosts(
+				const { pid: reply1Pid } = await topics.reply({ uid, tid, content: utils.generateUUID() });
+				const { pid: reply2Pid } = await topics.reply({ uid, tid, content: utils.generateUUID() });
+				await topics.createTopicFromPosts(
 					adminUid, utils.generateUUID(), [reply1Pid, reply2Pid], tid, cid
 				);
 
-				assert.strictEqual(activitypub._sent.size, 1);
+				assert.strictEqual(activitypub._sent.size, 2);
 
 				const key = Array.from(activitypub._sent.keys())[0];
 				const activity = activitypub._sent.get(key);
 
-				assert(activity);
-				assert.strictEqual(activity.object, `${nconf.get('url')}/post/${reply1Pid}`);
+				assert(activity && activity.object && typeof activity.object === 'object');
+				assert.strictEqual(activity.object.id, `${nconf.get('url')}/post/${reply1Pid}`);
+			});
+
+			it('should be called when a post is moved to another topic', async () => {
+				const [{ topicData: topic1 }, { topicData: topic2 }] = await Promise.all([
+					topics.post({
+						uid,
+						cid,
+						title: utils.generateUUID(),
+						content: utils.generateUUID(),
+					}),
+					topics.post({
+						uid,
+						cid,
+						title: utils.generateUUID(),
+						content: utils.generateUUID(),
+					}),
+				]);
+
+				assert(topic1 && topic2);
+
+				// Create new reply and move it to topic 2
+				const { pid } = await topics.reply({ uid, tid: topic1.tid, content: utils.generateUUID() });
+				await api.posts.move({ uid: adminUid }, { pid, tid: topic2.tid });
+
+				assert.strictEqual(activitypub._sent.size, 1);
+				const activities = Array.from(activitypub._sent.keys()).map(key => activitypub._sent.get(key));
+
+				const activity = activities.pop();
+				assert.strictEqual(activity.type, 'Announce');
+				assert(activity.object && activity.object.type);
+				assert.strictEqual(activity.object.type, 'Create');
+				assert(activity.object.object && activity.object.object.type);
+				assert.strictEqual(activity.object.object.type, 'Note');
 			});
 		});
 	});
