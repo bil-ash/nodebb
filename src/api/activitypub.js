@@ -13,6 +13,7 @@ const winston = require('winston');
 
 const db = require('../database');
 const user = require('../user');
+const categories = require('../categories');
 const meta = require('../meta');
 const privileges = require('../privileges');
 const activitypub = require('../activitypub');
@@ -43,12 +44,16 @@ activitypubApi.follow = enabledCheck(async (caller, { type, id, actor } = {}) =>
 		throw new Error('[[error:activitypub.invalid-id]]');
 	}
 
-	actor = actor.includes('@') ? await user.getUidByUserslug(actor) : actor;
-	const [handle, isFollowing] = await Promise.all([
-		user.getUserField(actor, 'username'),
-		db.isSortedSetMember(type === 'uid' ? `followingRemote:${id}` : `cid:${id}:following`, actor),
-	]);
+	if (actor.includes('@')) {
+		const [uid, cid] = await Promise.all([
+			user.getUidByUserslug(actor),
+			categories.getCidByHandle(actor),
+		]);
 
+		actor = uid || cid;
+	}
+
+	const isFollowing = await db.isSortedSetMember(type === 'uid' ? `followingRemote:${id}` : `cid:${id}:following`, actor);
 	if (isFollowing) { // already following
 		return;
 	}
@@ -58,7 +63,7 @@ activitypubApi.follow = enabledCheck(async (caller, { type, id, actor } = {}) =>
 	await db.sortedSetAdd(`followRequests:${type}.${id}`, timestamp, actor);
 	try {
 		await activitypub.send(type, id, [actor], {
-			id: `${nconf.get('url')}/${type}/${id}#activity/follow/${handle}/${timestamp}`,
+			id: `${nconf.get('url')}/${type}/${id}#activity/follow/${encodeURIComponent(actor)}/${timestamp}`,
 			type: 'Follow',
 			object: actor,
 		});
@@ -76,13 +81,21 @@ activitypubApi.unfollow = enabledCheck(async (caller, { type, id, actor }) => {
 		throw new Error('[[error:activitypub.invalid-id]]');
 	}
 
-	actor = actor.includes('@') ? await user.getUidByUserslug(actor) : actor;
-	const [handle, isFollowing] = await Promise.all([
-		user.getUserField(actor, 'username'),
+	if (actor.includes('@')) {
+		const [uid, cid] = await Promise.all([
+			user.getUidByUserslug(actor),
+			categories.getCidByHandle(actor),
+		]);
+
+		actor = uid || cid;
+	}
+
+	const [isFollowing, isPending] = await Promise.all([
 		db.isSortedSetMember(type === 'uid' ? `followingRemote:${id}` : `cid:${id}:following`, actor),
+		db.isSortedSetMember(`followRequests:${type === 'uid' ? 'uid' : 'cid'}.${id}`, actor),
 	]);
 
-	if (!isFollowing) { // already not following
+	if (!isFollowing && !isPending) { // already not following/pending
 		return;
 	}
 
@@ -93,7 +106,7 @@ activitypubApi.unfollow = enabledCheck(async (caller, { type, id, actor }) => {
 	const timestamp = timestamps[0] || timestamps[1];
 
 	const object = {
-		id: `${nconf.get('url')}/${type}/${id}#activity/follow/${handle}/${timestamp}`,
+		id: `${nconf.get('url')}/${type}/${id}#activity/follow/${encodeURIComponent(actor)}/${timestamp}`,
 		type: 'Follow',
 		object: actor,
 	};
@@ -104,7 +117,7 @@ activitypubApi.unfollow = enabledCheck(async (caller, { type, id, actor }) => {
 	}
 
 	await activitypub.send(type, id, [actor], {
-		id: `${nconf.get('url')}/${type}/${id}#activity/undo:follow/${handle}/${timestamp}`,
+		id: `${nconf.get('url')}/${type}/${id}#activity/undo:follow/${encodeURIComponent(actor)}/${timestamp}`,
 		type: 'Undo',
 		object,
 	});
@@ -297,7 +310,15 @@ activitypubApi.delete.note = enabledCheck(async (caller, { pid }) => {
 activitypubApi.like = {};
 
 activitypubApi.like.note = enabledCheck(async (caller, { pid }) => {
-	if (!activitypub.helpers.isUri(pid)) { // remote only
+	const payload = {
+		id: `${nconf.get('url')}/uid/${caller.uid}#activity/like/${encodeURIComponent(pid)}`,
+		type: 'Like',
+		actor: `${nconf.get('url')}/uid/${caller.uid}`,
+		object: utils.isNumber(pid) ? `${nconf.get('url')}/post/${pid}` : pid,
+	};
+
+	if (!activitypub.helpers.isUri(pid)) { // only 1b12 announce for local likes
+		await activitypub.feps.announce(pid, payload);
 		return;
 	}
 
@@ -305,13 +326,6 @@ activitypubApi.like.note = enabledCheck(async (caller, { pid }) => {
 	if (!activitypub.helpers.isUri(uid)) {
 		return;
 	}
-
-	const payload = {
-		id: `${nconf.get('url')}/uid/${caller.uid}#activity/like/${encodeURIComponent(pid)}`,
-		type: 'Like',
-		actor: `${nconf.get('url')}/uid/${caller.uid}`,
-		object: pid,
-	};
 
 	await Promise.all([
 		activitypub.send('uid', caller.uid, [uid], payload),
