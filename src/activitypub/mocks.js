@@ -33,6 +33,7 @@ const sanitizeConfig = {
 	allowedTags: sanitize.defaults.allowedTags.concat(['img', 'picture', 'source']),
 	allowedClasses: {
 		'*': [],
+		'p': ['quote-inline'],
 	},
 	allowedAttributes: {
 		a: ['href', 'rel'],
@@ -103,7 +104,7 @@ Mocks._normalize = async (object) => {
 	if (image) {
 		const parsed = new URL(image);
 		const type = mime.getType(parsed.pathname);
-		if (!type || type.startsWith('image/')) {
+		if (!type || !type.startsWith('image/')) {
 			activitypub.helpers.log(`[activitypub/mocks.post] Received image not identified as image due to MIME type: ${image}`);
 			image = null;
 		}
@@ -485,35 +486,37 @@ Mocks.actors.user = async (uid) => {
 	});
 
 	return {
-		'@context': [
-			'https://www.w3.org/ns/activitystreams',
-			'https://w3id.org/security/v1',
-		],
-		id: `${nconf.get('url')}/uid/${uid}`,
-		url: `${nconf.get('url')}/user/${userslug}`,
-		followers: `${nconf.get('url')}/uid/${uid}/followers`,
-		following: `${nconf.get('url')}/uid/${uid}/following`,
-		inbox: `${nconf.get('url')}/uid/${uid}/inbox`,
-		outbox: `${nconf.get('url')}/uid/${uid}/outbox`,
+		...{
+			'@context': [
+				'https://www.w3.org/ns/activitystreams',
+				'https://w3id.org/security/v1',
+			],
+			id: `${nconf.get('url')}/uid/${uid}`,
+			url: `${nconf.get('url')}/user/${userslug}`,
+			followers: `${nconf.get('url')}/uid/${uid}/followers`,
+			following: `${nconf.get('url')}/uid/${uid}/following`,
+			inbox: `${nconf.get('url')}/uid/${uid}/inbox`,
+			outbox: `${nconf.get('url')}/uid/${uid}/outbox`,
 
-		type: 'Person',
-		name: username !== displayname ? fullname : username, // displayname is escaped, fullname is not
-		preferredUsername: userslug,
-		summary: aboutmeParsed,
-		icon: picture,
-		image: cover,
-		published: new Date(joindate).toISOString(),
-		attachment,
+			type: 'Person',
+			name: username !== displayname ? fullname : username, // displayname is escaped, fullname is not
+			preferredUsername: userslug,
+			summary: aboutmeParsed,
+			published: new Date(joindate).toISOString(),
+			attachment,
 
-		publicKey: {
-			id: `${nconf.get('url')}/uid/${uid}#key`,
-			owner: `${nconf.get('url')}/uid/${uid}`,
-			publicKeyPem: publicKey,
+			publicKey: {
+				id: `${nconf.get('url')}/uid/${uid}#key`,
+				owner: `${nconf.get('url')}/uid/${uid}`,
+				publicKeyPem: publicKey,
+			},
+
+			endpoints: {
+				sharedInbox: `${nconf.get('url')}/inbox`,
+			},
 		},
-
-		endpoints: {
-			sharedInbox: `${nconf.get('url')}/inbox`,
-		},
+		...(picture && { icon: picture }),
+		...(cover && { image: cover }),
 	};
 };
 
@@ -603,7 +606,6 @@ Mocks.notes.public = async (post) => {
 	let inReplyTo = null;
 	let tag = null;
 	let followersUrl;
-	const isMainPost = post.pid === post.topic.mainPid;
 
 	let name = null;
 	({ titleRaw: name } = await topics.getTopicFields(post.tid, ['title']));
@@ -716,7 +718,9 @@ Mocks.notes.public = async (post) => {
 	});
 
 	// Special handling for main posts (as:Article w/ as:Note preview)
-	const noteAttachment = isMainPost ? [...attachment] : null;
+	const plaintext = posts.sanitizePlaintext(content);
+	const isArticle = post.pid === post.topic.mainPid && plaintext.length > 500;
+	const noteAttachment = isArticle ? [...attachment] : null;
 	const [uploads, thumbs] = await Promise.all([
 		posts.uploads.listWithSizes(post.pid),
 		topics.getTopicField(post.tid, 'thumbs'),
@@ -748,7 +752,7 @@ Mocks.notes.public = async (post) => {
 	attachment = normalizeAttachment(attachment);
 	let preview;
 	let summary = null;
-	if (isMainPost) {
+	if (isArticle) {
 		preview = {
 			type: 'Note',
 			attributedTo: `${nconf.get('url')}/uid/${post.user.uid}`,
@@ -757,17 +761,25 @@ Mocks.notes.public = async (post) => {
 			attachment: normalizeAttachment(noteAttachment),
 		};
 
-		const sentences = tokenizer.sentences(post.content, { sanitize: true });
+		const sentences = tokenizer.sentences(post.content, { newline_boundaries: true });
 		// Append sentences to summary until it contains just under 500 characters of content
 		const limit = 500;
+		let remaining = limit;
 		summary = sentences.reduce((memo, sentence) => {
-			const remaining = limit - memo.length;
-			if (sentence.length < remaining) {
+			const clean = sanitize(sentence, {
+				allowedTags: [],
+				allowedAttributes: {},
+			});
+			remaining = remaining - clean.length;
+			if (remaining > 0) {
 				memo += ` ${sentence}`;
 			}
 
 			return memo;
 		}, '');
+
+		// Final sanitization to clean up tags
+		summary = posts.sanitize(summary);
 	}
 
 	let context = await posts.getPostField(post.pid, 'context');
@@ -790,7 +802,7 @@ Mocks.notes.public = async (post) => {
 	let object = {
 		'@context': 'https://www.w3.org/ns/activitystreams',
 		id,
-		type: isMainPost ? 'Article' : 'Note',
+		type: isArticle ? 'Article' : 'Note',
 		to: Array.from(to),
 		cc: Array.from(cc),
 		inReplyTo,

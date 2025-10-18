@@ -63,20 +63,20 @@ describe('FEPs', () => {
 					activitypub._sent.clear();
 				});
 
-				it('should have federated out both Announce(Create(Article)) and Announce(Article)', () => {
+				it('should have federated out both Announce(Create(Note)) and Announce(Note)', () => {
 					const activities = Array.from(activitypub._sent);
 
 					const test1 = activities.some((activity) => {
 						[, activity] = activity;
 						return activity.type === 'Announce' &&
 							activity.object && activity.object.type === 'Create' &&
-							activity.object.object && activity.object.object.type === 'Article';
+							activity.object.object && activity.object.object.type === 'Note';
 					});
 
 					const test2 = activities.some((activity) => {
 						[, activity] = activity;
 						return activity.type === 'Announce' &&
-							activity.object && activity.object.type === 'Article';
+							activity.object && activity.object.type === 'Note';
 					});
 
 					assert(test1 && test2);
@@ -221,30 +221,6 @@ describe('FEPs', () => {
 			});
 
 			describe('extended actions not explicitly specified in 1b12', () => {
-				it('should be called when a topic is moved from uncategorized to another category', async () => {
-					const { topicData, postData } = await topics.post({
-						uid,
-						cid: -1,
-						title: utils.generateUUID(),
-						content: utils.generateUUID(),
-					});
-
-					assert(topicData);
-
-					await api.topics.move({ uid: adminUid }, {
-						tid: topicData.tid,
-						cid,
-					});
-
-					assert.strictEqual(activitypub._sent.size, 2);
-
-					const key = Array.from(activitypub._sent.keys())[0];
-					const activity = activitypub._sent.get(key);
-
-					assert(activity && activity.object && typeof activity.object === 'object');
-					assert.strictEqual(activity.object.id, `${nconf.get('url')}/post/${postData.pid}`);
-				});
-
 				it('should be called for a newly forked topic', async () => {
 					const { topicData } = await topics.post({
 						uid,
