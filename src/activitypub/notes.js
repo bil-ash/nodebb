@@ -15,6 +15,7 @@ const notifications = require('../notifications');
 const user = require('../user');
 const topics = require('../topics');
 const posts = require('../posts');
+const api = require('../api');
 const utils = require('../utils');
 
 const activitypub = module.parent.exports;
@@ -106,7 +107,7 @@ Notes.assert = async (uid, input, options = { skipChecks: false }) => {
 
 		if (options.cid && cid === -1) {
 			// Move topic if currently uncategorized
-			await topics.tools.move(tid, { cid: options.cid, uid: 'system' });
+			await api.topics.move({ uid: 'system' }, { tid, cid: options.cid });
 		}
 
 		const exists = await posts.exists(chain.map(p => p.pid));
@@ -210,7 +211,7 @@ Notes.assert = async (uid, input, options = { skipChecks: false }) => {
 		activitypub.helpers.log(`[notes/assert] ${count} new note(s) found.`);
 
 		if (!hasTid) {
-			const { to, cc, attachment } = mainPost._activitypub;
+			const { to, cc } = mainPost._activitypub;
 			const tags = await Notes._normalizeTags(mainPost._activitypub.tag || []);
 
 			try {
@@ -239,7 +240,6 @@ Notes.assert = async (uid, input, options = { skipChecks: false }) => {
 					id: tid,
 					path: mainPost._activitypub.image,
 				}) : null,
-				posts.attachments.update(mainPid, attachment),
 			]);
 
 			if (context) {
@@ -249,22 +249,25 @@ Notes.assert = async (uid, input, options = { skipChecks: false }) => {
 		}
 
 		for (const post of unprocessed) {
-			const { to, cc, attachment } = post._activitypub;
+			const { to, cc } = post._activitypub;
 
 			try {
 				// eslint-disable-next-line no-await-in-loop
 				await topics.reply(post);
 				// eslint-disable-next-line no-await-in-loop
-				await Promise.all([
-					Notes.updateLocalRecipients(post.pid, { to, cc }),
-					posts.attachments.update(post.pid, attachment),
-				]);
+				await Notes.updateLocalRecipients(post.pid, { to, cc });
 			} catch (e) {
 				activitypub.helpers.log(`[activitypub/notes.assert] Could not add reply (${post.pid}): ${e.message}`);
 			}
 		}
 
 		await Notes.syncUserInboxes(tid, uid);
+
+		if (!hasTid && options.cid) {
+			// New topic, have category announce it
+			activitypub.out.announce.category(tid);
+		}
+
 		return { tid, count };
 	} catch (e) {
 		winston.warn(`[activitypub/notes.assert] Could not assert ${id} (${e.message}).`);

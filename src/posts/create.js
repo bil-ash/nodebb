@@ -18,6 +18,7 @@ module.exports = function (Posts) {
 		const content = data.content.toString();
 		const timestamp = data.timestamp || Date.now();
 		const isMain = data.isMain || false;
+		let hasAttachment = false;
 
 		if (!uid && parseInt(uid, 10) !== 0) {
 			throw new Error('[[error:invalid-uid]]');
@@ -46,23 +47,25 @@ module.exports = function (Posts) {
 			if (_activitypub.audience) {
 				postData.audience = _activitypub.audience;
 			}
-		}
 
-		// Rewrite emoji references to inline image assets
-		if (_activitypub && _activitypub.tag && Array.isArray(_activitypub.tag)) {
-			_activitypub.tag
-				.filter(tag => tag.type === 'Emoji' &&
-					tag.icon && tag.icon.type === 'Image')
-				.forEach((tag) => {
-					if (!tag.name.startsWith(':')) {
-						tag.name = `:${tag.name}`;
-					}
-					if (!tag.name.endsWith(':')) {
-						tag.name = `${tag.name}:`;
-					}
+			// Rewrite emoji references to inline image assets
+			if (_activitypub && _activitypub.tag && Array.isArray(_activitypub.tag)) {
+				_activitypub.tag
+					.filter(tag => tag.type === 'Emoji' &&
+								tag.icon && tag.icon.type === 'Image')
+					.forEach((tag) => {
+						if (!tag.name.startsWith(':')) {
+							tag.name = `:${tag.name}`;
+						}
+						if (!tag.name.endsWith(':')) {
+							tag.name = `${tag.name}:`;
+						}
 
-					postData.content = postData.content.replace(new RegExp(tag.name, 'g'), `<img class="not-responsive emoji" src="${tag.icon.url}" title="${tag.name}" />`);
-				});
+						postData.content = postData.content.replace(new RegExp(tag.name, 'g'), `<img class="not-responsive emoji" src="${tag.icon.url}" title="${tag.name}" />`);
+					});
+			}
+
+			hasAttachment = _activitypub && _activitypub.attachment && _activitypub.attachment.length;
 		}
 
 		({ post: postData } = await plugins.hooks.fire('filter:post.create', { post: postData, data: data }));
@@ -79,7 +82,8 @@ module.exports = function (Posts) {
 			categories.onNewPostMade(topicData.cid, topicData.pinned, postData),
 			groups.onNewPostMade(postData),
 			addReplyTo(postData, timestamp),
-			Posts.uploads.sync(postData.pid),
+			Posts.uploads.sync(pid),
+			hasAttachment ? Posts.attachments.update(pid, _activitypub.attachment) : null,
 		]);
 
 		const result = await plugins.hooks.fire('filter:post.get', { post: postData, uid: data.uid });
